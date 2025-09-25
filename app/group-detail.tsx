@@ -1,0 +1,1365 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  StyleSheet,
+  Text,
+  View,
+  ScrollView,
+  TouchableOpacity,
+  Image,
+  Modal,
+  Dimensions,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  ActivityIndicator,
+  RefreshControl,
+  Keyboard,
+  KeyboardEvent,
+  ActionSheetIOS,
+} from "react-native";
+import * as ImagePicker from 'expo-image-picker';
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { Heart, MessageCircle, Eye, ChevronLeft, Send, Camera, Image as ImageIcon, X, Users, UserPlus, MoreVertical, Trash2 } from "lucide-react-native";
+import { useLanguage } from "@/hooks/language-context";
+import { useUser } from "@/hooks/user-context";
+import { trpc } from "@/lib/trpc";
+import { supabase } from "@/lib/supabase";
+
+const { width } = Dimensions.get('window');
+
+interface Post {
+  id: string;
+  user_id: string;
+  group_id?: string;
+  content: string;
+  study_hours?: number;
+  subjects_studied?: string[];
+  mood?: string;
+  image_url?: string;
+  likes_count: number;
+  comments_count: number;
+  views_count: number;
+  created_at: string;
+  updated_at: string;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  group?: {
+    id: string;
+    name: string;
+  };
+  likes?: Array<{ user_id: string }>;
+  comments?: {
+    id: string;
+    content: string;
+    created_at: string;
+    user?: {
+      id: string;
+      name: string;
+    };
+  }[];
+}
+
+interface Group {
+  id: string;
+  name: string;
+  description?: string;
+  subject?: string;
+  member_count: number;
+  max_members?: number;
+  is_public: boolean;
+  created_by: string;
+  creator?: {
+    id: string;
+    name: string;
+  };
+  members?: Array<{ user_id: string }>;
+  isMember?: boolean;
+}
+
+export default function GroupDetailScreen() {
+  const { language } = useLanguage();
+  const { user, isLoading: userLoading } = useUser();
+  const userId = user?.id;
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { groupId } = useLocalSearchParams<{ groupId: string }>();
+  
+  const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const [showPostDetail, setShowPostDetail] = useState(false);
+  const [showCreatePost, setShowCreatePost] = useState(false);
+  const [newPostContent, setNewPostContent] = useState("");
+  const [postImage, setPostImage] = useState<string | null>(null);
+  const [newComment, setNewComment] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const commentInputRef = useRef<TextInput>(null);
+  
+  // Fetch user profile
+  const userProfileQuery = trpc.users.getUserProfile.useQuery(
+    { userId: userId || '' },
+    { enabled: !!userId }
+  );
+
+  // Fetch group details
+  const groupQuery = trpc.community.groups.getGroups.useQuery({
+    userId: userId,
+  }, {
+    enabled: !userLoading && !!userId && !!groupId,
+  });
+
+  const currentGroup = groupQuery.data?.find(g => g.id === groupId);
+
+  // Fetch posts for this group
+  const postsQuery = trpc.community.posts.getPosts.useQuery({
+    groupId: groupId,
+    limit: 50,
+  }, {
+    enabled: !userLoading && !!user && !!groupId,
+    refetchInterval: 10000,
+  });
+
+  // Mutations
+  const createPostMutation = trpc.community.posts.createPost.useMutation({
+    onSuccess: () => {
+      postsQuery.refetch();
+      setNewPostContent("");
+      setPostImage(null);
+      setShowCreatePost(false);
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '게시물이 작성되었습니다' : 'Post created successfully'
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        error.message
+      );
+    },
+  });
+
+  const likePostMutation = trpc.community.posts.likePost.useMutation({
+    onSuccess: () => {
+      postsQuery.refetch();
+    },
+  });
+
+  const addCommentMutation = trpc.community.posts.addComment.useMutation({
+    onSuccess: () => {
+      postsQuery.refetch().then(() => {
+        if (selectedPost) {
+          const updatedPost = postsQuery.data?.find(p => p.id === selectedPost.id);
+          if (updatedPost) {
+            setSelectedPost(updatedPost);
+          }
+        }
+      });
+      setNewComment("");
+    },
+  });
+
+  const incrementPostViewMutation = trpc.community.posts.incrementView.useMutation();
+
+  const deletePostMutation = trpc.community.posts.deletePost.useMutation({
+    onSuccess: () => {
+      postsQuery.refetch();
+      setShowPostDetail(false);
+      setSelectedPost(null);
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '게시물이 삭제되었습니다.' : 'Post deleted successfully.'
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        error.message || (language === 'ko' ? '게시물 삭제에 실패했습니다.' : 'Failed to delete post.')
+      );
+    },
+  });
+
+  const joinGroupMutation = trpc.community.groups.joinGroup.useMutation({
+    onSuccess: () => {
+      groupQuery.refetch();
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '그룹에 가입되었습니다' : 'Joined group successfully'
+      );
+    },
+  });
+
+  const leaveGroupMutation = trpc.community.groups.leaveGroup.useMutation({
+    onSuccess: () => {
+      groupQuery.refetch();
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '그룹에서 나갔습니다' : 'Left group successfully'
+      );
+      router.back();
+    },
+  });
+
+  // Set up real-time subscription
+  useEffect(() => {
+    if (!user || !groupId) return;
+    
+    const channel = supabase
+      .channel(`group-${groupId}-changes`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'daily_posts',
+        filter: `group_id=eq.${groupId}`
+      }, () => {
+        postsQuery.refetch();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, groupId, postsQuery]);
+
+
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await Promise.all([
+      postsQuery.refetch(),
+      groupQuery.refetch(),
+    ]);
+    setRefreshing(false);
+  };
+
+  const handleLikePost = (postId: string) => {
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    likePostMutation.mutate({ postId });
+  };
+
+  const handleAddComment = () => {
+    if (!newComment.trim() || !selectedPost) return;
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    
+    addCommentMutation.mutate({
+      postId: selectedPost.id,
+      content: newComment,
+    });
+  };
+
+  const handleDeletePost = (postId: string) => {
+    Alert.alert(
+      language === 'ko' ? '게시물 삭제' : 'Delete Post',
+      language === 'ko' ? '이 게시물을 삭제하시겠습니까?' : 'Are you sure you want to delete this post?',
+      [
+        {
+          text: language === 'ko' ? '취소' : 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: language === 'ko' ? '삭제' : 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deletePostMutation.mutate({ postId });
+          },
+        },
+      ]
+    );
+  };
+
+  const showPostOptions = (post: Post) => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [
+            language === 'ko' ? '취소' : 'Cancel',
+            language === 'ko' ? '게시물 삭제' : 'Delete Post',
+          ],
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            handleDeletePost(post.id);
+          }
+        }
+      );
+    } else {
+      handleDeletePost(post.id);
+    }
+  };
+
+  const handleCreatePost = () => {
+    if (!newPostContent.trim()) {
+      Alert.alert(
+        language === 'ko' ? '알림' : 'Notice',
+        language === 'ko' ? '내용을 입력해주세요' : 'Please enter content'
+      );
+      return;
+    }
+    
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+
+    createPostMutation.mutate({
+      content: newPostContent,
+      groupId: groupId,
+      imageUrl: postImage || undefined,
+    });
+  };
+
+  const requestPermissions = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        language === 'ko' ? '권한 필요' : 'Permission Required',
+        language === 'ko' ? '사진을 선택하려면 갤러리 접근 권한이 필요합니다.' : 'We need gallery access permission to select photos.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const requestCameraPermissions = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        language === 'ko' ? '권한 필요' : 'Permission Required',
+        language === 'ko' ? '사진을 촬영하려면 카메라 접근 권한이 필요합니다.' : 'We need camera access permission to take photos.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const pickImageFromGallery = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: false,
+        exif: false,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const imageUri = result.assets[0].uri;
+        console.log('Selected image from gallery:', imageUri);
+        setPostImage(imageUri);
+      }
+    } catch (error) {
+      console.error('Error picking image from gallery:', error);
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        language === 'ko' ? '이미지를 선택하는 중 오류가 발생했습니다.' : 'An error occurred while selecting the image.'
+      );
+    }
+  };
+
+  const takePhoto = async () => {
+    const hasPermission = await requestCameraPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: false,
+        exif: false,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const imageUri = result.assets[0].uri;
+        console.log('Captured photo:', imageUri);
+        setPostImage(imageUri);
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        language === 'ko' ? '사진을 촬영하는 중 오류가 발생했습니다.' : 'An error occurred while taking the photo.'
+      );
+    }
+  };
+
+  const handleImageSelection = () => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [
+            language === 'ko' ? '취소' : 'Cancel',
+            language === 'ko' ? '사진 촬영' : 'Take Photo',
+            language === 'ko' ? '갤러리에서 선택' : 'Choose from Gallery'
+          ],
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            takePhoto();
+          } else if (buttonIndex === 2) {
+            pickImageFromGallery();
+          }
+        }
+      );
+    } else {
+      Alert.alert(
+        language === 'ko' ? '사진 선택' : 'Select Photo',
+        language === 'ko' ? '사진을 어떻게 추가하시겠습니까?' : 'How would you like to add a photo?',
+        [
+          { text: language === 'ko' ? '취소' : 'Cancel', style: 'cancel' },
+          { text: language === 'ko' ? '사진 촬영' : 'Take Photo', onPress: () => takePhoto() },
+          { text: language === 'ko' ? '갤러리에서 선택' : 'Choose from Gallery', onPress: () => pickImageFromGallery() },
+        ]
+      );
+    }
+  };
+
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) {
+      return language === 'ko' ? `${days}일 전` : `${days}d ago`;
+    } else if (hours > 0) {
+      return language === 'ko' ? `${hours}시간 전` : `${hours}h ago`;
+    } else {
+      return language === 'ko' ? '방금' : 'Just now';
+    }
+  };
+
+  const renderPost = (post: Post) => {
+    const isLiked = post.likes?.some(like => like.user_id === userId) || false;
+    
+    return (
+      <View key={post.id} style={styles.postCard}>
+        <View style={styles.postHeader}>
+          <View style={styles.userInfo}>
+            <Image 
+              source={{ 
+                uri: post.user_id === userId && userProfileQuery.data?.profilePictureUrl 
+                  ? userProfileQuery.data.profilePictureUrl 
+                  : `https://i.pravatar.cc/150?u=${post.user_id}` 
+              }} 
+              style={styles.avatar} 
+            />
+            <View style={styles.userDetails}>
+              <Text style={styles.userName}>
+                {post.user_id === userId && userProfileQuery.data?.name 
+                  ? userProfileQuery.data.name 
+                  : (post.user?.name || '익명')}
+              </Text>
+              <Text style={styles.postTime}>{formatTime(post.created_at)}</Text>
+            </View>
+          </View>
+          {post.user_id === userId && (
+            <TouchableOpacity 
+              onPress={() => showPostOptions(post)}
+              style={styles.moreButton}
+            >
+              <MoreVertical size={20} color="#8E8E93" />
+            </TouchableOpacity>
+          )}
+        </View>
+        
+        <TouchableOpacity 
+          style={styles.imageContainer}
+          onPress={() => {
+            setSelectedPost(post);
+            setShowPostDetail(true);
+            incrementPostViewMutation.mutate({ postId: post.id });
+          }}
+        >
+          <Image 
+            source={{ 
+              uri: post.image_url || 'https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=400&h=400&fit=crop'
+            }} 
+            style={styles.postImage} 
+          />
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={styles.contentSection}
+          onPress={() => {
+            setSelectedPost(post);
+            setShowPostDetail(true);
+            incrementPostViewMutation.mutate({ postId: post.id });
+          }}
+        >
+          <Text style={styles.postContent} numberOfLines={3}>
+            {post.content}
+          </Text>
+        </TouchableOpacity>
+        
+        <View style={styles.actionsBar}>
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => handleLikePost(post.id)}
+            disabled={likePostMutation.isPending}
+          >
+            <Heart 
+              size={18} 
+              color={isLiked ? "#FF3B30" : "#8E8E93"} 
+              fill={isLiked ? "#FF3B30" : "none"}
+            />
+            <Text style={[styles.actionText, isLiked && styles.actionTextActive]}>
+              {post.likes_count || 0}
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.actionButton}
+            onPress={() => {
+              setSelectedPost(post);
+              setShowPostDetail(true);
+              incrementPostViewMutation.mutate({ postId: post.id });
+            }}
+          >
+            <MessageCircle size={18} color="#8E8E93" />
+            <Text style={styles.actionText}>{post.comments_count || 0}</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.actionButton}>
+            <Eye size={18} color="#8E8E93" />
+            <Text style={styles.actionText}>{post.views_count || 0}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const isLoading = userLoading || groupQuery.isLoading || postsQuery.isLoading;
+
+  return (
+    <View style={styles.container}>
+      <Stack.Screen 
+        options={{
+          title: currentGroup?.name || (language === 'ko' ? '그룹' : 'Group'),
+          headerRight: () => currentGroup && (
+            <TouchableOpacity
+              style={styles.headerButton}
+              onPress={() => {
+                if (currentGroup.isMember) {
+                  Alert.alert(
+                    language === 'ko' ? '그룹 나가기' : 'Leave Group',
+                    language === 'ko' ? '정말 이 그룹을 나가시겠습니까?' : 'Are you sure you want to leave this group?',
+                    [
+                      {
+                        text: language === 'ko' ? '취소' : 'Cancel',
+                        style: 'cancel'
+                      },
+                      {
+                        text: language === 'ko' ? '나가기' : 'Leave',
+                        style: 'destructive',
+                        onPress: () => leaveGroupMutation.mutate({ groupId })
+                      }
+                    ]
+                  );
+                } else {
+                  joinGroupMutation.mutate({ groupId });
+                }
+              }}
+            >
+              {currentGroup.isMember ? (
+                <Text style={styles.headerButtonText}>
+                  {language === 'ko' ? '나가기' : 'Leave'}
+                </Text>
+              ) : (
+                <UserPlus size={20} color="#007AFF" />
+              )}
+            </TouchableOpacity>
+          ),
+        }}
+      />
+
+      {currentGroup && (
+        <View style={styles.groupInfo}>
+          <View style={styles.groupHeader}>
+            <Users size={20} color="#007AFF" />
+            <Text style={styles.groupName}>{currentGroup.name}</Text>
+          </View>
+          {currentGroup.description && (
+            <Text style={styles.groupDescription}>{currentGroup.description}</Text>
+          )}
+          <Text style={styles.groupMembers}>
+            {currentGroup.member_count} {language === 'ko' ? '멤버' : 'members'}
+          </Text>
+        </View>
+      )}
+
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
+      >
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <Text style={styles.loadingText}>
+              {language === 'ko' ? '로딩 중...' : 'Loading...'}
+            </Text>
+          </View>
+        ) : postsQuery.data && postsQuery.data.length > 0 ? (
+          postsQuery.data.map(renderPost)
+        ) : (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>
+              {language === 'ko' ? '아직 게시물이 없습니다' : 'No posts yet'}
+            </Text>
+            <Text style={styles.emptySubText}>
+              {language === 'ko' ? '첫 번째 게시물을 작성해보세요!' : 'Be the first to post!'}
+            </Text>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Post Detail Modal */}
+      <Modal
+        visible={showPostDetail}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity 
+              onPress={() => setShowPostDetail(false)}
+              style={styles.backButton}
+            >
+              <ChevronLeft size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>
+              {language === 'ko' ? '게시물' : 'Post'}
+            </Text>
+            {selectedPost?.user_id === userId ? (
+              <TouchableOpacity 
+                onPress={() => selectedPost && showPostOptions(selectedPost)}
+                style={styles.moreButton}
+              >
+                <MoreVertical size={20} color="#8E8E93" />
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.spacer} />
+            )}
+          </View>
+          
+          {selectedPost && (
+            <>
+              <ScrollView 
+                ref={scrollViewRef}
+                style={styles.modalScrollContent}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ paddingBottom: 100 }}
+              >
+                <View style={styles.postDetailHeader}>
+                  <Image 
+                    source={{ 
+                      uri: selectedPost.user_id === userId && userProfileQuery.data?.profilePictureUrl 
+                        ? userProfileQuery.data.profilePictureUrl 
+                        : `https://i.pravatar.cc/150?u=${selectedPost.user_id}` 
+                    }} 
+                    style={styles.detailAvatar} 
+                  />
+                  <View style={styles.postInfo}>
+                    <Text style={styles.authorName}>
+                      {selectedPost.user_id === userId && userProfileQuery.data?.name 
+                        ? userProfileQuery.data.name 
+                        : (selectedPost.user?.name || 'Anonymous')}
+                    </Text>
+                    <Text style={styles.detailPostTime}>{formatTime(selectedPost.created_at)}</Text>
+                  </View>
+                </View>
+                
+                <Text style={styles.postDetailContent}>{selectedPost.content}</Text>
+                
+                <Image 
+                  source={{ 
+                    uri: selectedPost.image_url || 'https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=400&h=400&fit=crop'
+                  }} 
+                  style={styles.postDetailImage} 
+                />
+                
+                <View style={styles.postDetailActions}>
+                  <TouchableOpacity 
+                    style={styles.likeButton}
+                    onPress={() => handleLikePost(selectedPost.id)}
+                    disabled={likePostMutation.isPending}
+                  >
+                    <Heart 
+                      size={16} 
+                      color={selectedPost.likes?.some(like => like.user_id === userId) ? "#FF3B30" : "#8E8E93"}
+                      fill={selectedPost.likes?.some(like => like.user_id === userId) ? "#FF3B30" : "none"}
+                    />
+                    <Text style={[styles.likeButtonText, selectedPost.likes?.some(like => like.user_id === userId) && { color: "#FF3B30" }]}>
+                      {selectedPost.likes_count || 0}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <View style={styles.commentsSection}>
+                  <Text style={styles.commentsTitle}>
+                    {language === 'ko' ? '댓글' : 'Comments'} {selectedPost.comments_count}
+                  </Text>
+                  
+                  {selectedPost.comments?.map((comment) => (
+                    <View key={comment.id} style={styles.commentItem}>
+                      <Image 
+                        source={{ 
+                          uri: comment.user?.id === userId && userProfileQuery.data?.profilePictureUrl 
+                            ? userProfileQuery.data.profilePictureUrl 
+                            : `https://i.pravatar.cc/150?u=${comment.user?.id}` 
+                        }} 
+                        style={styles.commentAvatar} 
+                      />
+                      <View style={styles.commentContent}>
+                        <View style={styles.commentHeader}>
+                          <Text style={styles.commentAuthor}>
+                            {comment.user?.id === userId && userProfileQuery.data?.name 
+                              ? userProfileQuery.data.name 
+                              : (comment.user?.name || 'Anonymous')}
+                          </Text>
+                          <Text style={styles.commentTime}>
+                            {formatTime(comment.created_at)}
+                          </Text>
+                        </View>
+                        <Text style={styles.commentText}>{comment.content}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+              
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'position' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 60 : 0}
+              >
+                <View style={styles.commentInputContainer}>
+                  <View style={styles.commentInputWrapper}>
+                    <TextInput
+                      ref={commentInputRef}
+                      style={styles.commentInput}
+                      placeholder={language === 'ko' ? '댓글을 입력하세요...' : 'Write a comment...'}
+                      placeholderTextColor="#8E8E93"
+                      value={newComment}
+                      onChangeText={setNewComment}
+                      multiline
+                      maxLength={500}
+                    />
+                    <TouchableOpacity 
+                      style={[styles.sendButton, (!newComment.trim() || addCommentMutation.isPending) && styles.sendButtonDisabled]}
+                      onPress={handleAddComment}
+                      disabled={!newComment.trim() || addCommentMutation.isPending}
+                    >
+                      {addCommentMutation.isPending ? (
+                        <ActivityIndicator size="small" color="#007AFF" />
+                      ) : (
+                        <Send size={20} color={newComment.trim() ? "#007AFF" : "#C7C7CC"} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </KeyboardAvoidingView>
+            </>
+          )}
+        </View>
+      </Modal>
+
+      {/* Create Post Modal */}
+      <Modal
+        visible={showCreatePost}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView 
+          style={[styles.modalContainer, { paddingTop: insets.top }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+        >
+          <View style={styles.createPostHeader}>
+            <TouchableOpacity onPress={() => setShowCreatePost(false)}>
+              <X size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.createPostTitle}>
+              {language === 'ko' ? '새 게시물' : 'New Post'}
+            </Text>
+            <TouchableOpacity onPress={handleCreatePost}>
+              <Text style={styles.postButton}>
+                {language === 'ko' ? '게시' : 'Post'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          
+          <ScrollView style={styles.createPostContent} keyboardShouldPersistTaps="handled">
+            <TextInput
+              style={styles.postTextInput}
+              placeholder={language === 'ko' ? '그룹에 공유할 내용을 작성해주세요...' : 'Share with the group...'}
+              placeholderTextColor="#8E8E93"
+              value={newPostContent}
+              onChangeText={setNewPostContent}
+              multiline
+              autoFocus
+            />
+            
+            {/* Image Preview Section */}
+            {postImage && (
+              <View style={styles.imagePreviewSection}>
+                <View style={styles.imagePreviewContainer}>
+                  <Image source={{ uri: postImage }} style={styles.postImagePreview} />
+                  <TouchableOpacity 
+                    style={styles.removePostImageButton}
+                    onPress={() => setPostImage(null)}
+                  >
+                    <X size={20} color="#FFFFFF" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+            
+            <View style={styles.centeredMediaSection}>
+              <Text style={styles.mediaSectionTitle}>
+                {language === 'ko' ? '사진 추가' : 'Add Photo'}
+              </Text>
+              <View style={styles.centeredMediaButtons}>
+                <TouchableOpacity 
+                  style={styles.centeredMediaButton}
+                  onPress={takePhoto}
+                >
+                  <Camera size={32} color="#007AFF" />
+                  <Text style={styles.centeredMediaButtonText}>
+                    {language === 'ko' ? '사진 촬영' : 'Take Photo'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.centeredMediaButton}
+                  onPress={pickImageFromGallery}
+                >
+                  <ImageIcon size={32} color="#007AFF" />
+                  <Text style={styles.centeredMediaButtonText}>
+                    {language === 'ko' ? '갤러리에서 선택' : 'Choose from Gallery'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Floating Action Button */}
+      {currentGroup?.isMember && (
+        <TouchableOpacity 
+          style={styles.fab}
+          onPress={() => setShowCreatePost(true)}
+        >
+          <Text style={styles.fabText}>+</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#F2F2F7",
+  },
+  headerButton: {
+    marginRight: 16,
+  },
+  headerButtonText: {
+    fontSize: 16,
+    color: "#FF3B30",
+    fontWeight: "500",
+  },
+  groupInfo: {
+    backgroundColor: "#FFFFFF",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+  },
+  groupHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  groupName: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#000000",
+  },
+  groupDescription: {
+    fontSize: 14,
+    color: "#8E8E93",
+    marginBottom: 8,
+    lineHeight: 20,
+  },
+  groupMembers: {
+    fontSize: 12,
+    color: "#007AFF",
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingVertical: 8,
+    paddingBottom: 80,
+  },
+  postCard: {
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 16,
+    marginVertical: 8,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  postHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  userInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+  },
+  userDetails: {
+    flex: 1,
+  },
+  userName: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#000000",
+    marginBottom: 2,
+  },
+  postTime: {
+    fontSize: 13,
+    color: "#8E8E93",
+  },
+  imageContainer: {
+    width: '100%',
+    aspectRatio: 1.5,
+    backgroundColor: "#F0F0F0",
+  },
+  postImage: {
+    width: '100%',
+    height: '100%',
+  },
+  contentSection: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  postContent: {
+    fontSize: 14,
+    color: "#000000",
+    lineHeight: 20,
+  },
+  actionsBar: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 24,
+  },
+  actionButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  actionText: {
+    fontSize: 14,
+    color: "#8E8E93",
+    fontWeight: "500",
+  },
+  actionTextActive: {
+    color: "#FF3B30",
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#8E8E93',
+    marginTop: 12,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#8E8E93',
+  },
+  emptySubText: {
+    fontSize: 14,
+    color: '#C7C7CC',
+    marginTop: 8,
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+  },
+  backButton: {
+    marginRight: 16,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#000000",
+    flex: 1,
+  },
+  spacer: {
+    width: 24,
+  },
+  modalContent: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  postDetailHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 16,
+  },
+  detailAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginRight: 10,
+  },
+  postInfo: {
+    flex: 1,
+  },
+  authorName: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#000000",
+  },
+  detailPostTime: {
+    fontSize: 11,
+    color: "#8E8E93",
+    marginTop: 2,
+  },
+  postDetailContent: {
+    fontSize: 16,
+    color: "#000000",
+    lineHeight: 22,
+    marginBottom: 16,
+  },
+  postDetailImage: {
+    width: width - 40,
+    height: 250,
+    borderRadius: 8,
+    marginBottom: 16,
+    backgroundColor: "#F0F0F0",
+  },
+  postDetailActions: {
+    flexDirection: "row",
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+  },
+  likeButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#F0F0F0",
+    borderRadius: 16,
+    gap: 4,
+  },
+  likeButtonText: {
+    fontSize: 12,
+    color: "#8E8E93",
+  },
+  commentsSection: {
+    paddingVertical: 16,
+  },
+  commentsTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#000000",
+    marginBottom: 16,
+  },
+  commentItem: {
+    flexDirection: "row",
+    marginBottom: 16,
+  },
+  commentAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 12,
+  },
+  commentContent: {
+    flex: 1,
+  },
+  commentHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  commentAuthor: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#000000",
+  },
+  commentTime: {
+    fontSize: 10,
+    color: "#8E8E93",
+  },
+  commentText: {
+    fontSize: 14,
+    color: "#000000",
+    lineHeight: 18,
+  },
+  commentInputContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5EA',
+    backgroundColor: '#FFFFFF',
+  },
+  commentInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  commentInput: {
+    flex: 1,
+    minHeight: 36,
+    maxHeight: 100,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    fontSize: 14,
+    color: '#000000',
+  },
+  sendButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sendButtonDisabled: {
+    backgroundColor: '#C7C7CC',
+    opacity: 0.6,
+  },
+  createPostHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E5EA',
+  },
+  createPostTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+  },
+  postButton: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  createPostContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  postTextInput: {
+    minHeight: 120,
+    paddingTop: 20,
+    paddingBottom: 20,
+    fontSize: 16,
+    color: '#000000',
+    textAlignVertical: 'top',
+  },
+  createPostActions: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5EA',
+    gap: 20,
+    backgroundColor: '#FFFFFF',
+  },
+  mediaButton: {
+    padding: 8,
+  },
+  centeredMediaSection: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+    paddingHorizontal: 20,
+    marginTop: 40,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5EA',
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    marginHorizontal: 0,
+  },
+  mediaSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  centeredMediaButtons: {
+    flexDirection: 'row',
+    gap: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  centeredMediaButton: {
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#007AFF',
+    borderStyle: 'dashed',
+    minWidth: 100,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  centeredMediaButtonText: {
+    fontSize: 12,
+    color: '#007AFF',
+    marginTop: 8,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  fabText: {
+    fontSize: 28,
+    color: '#FFFFFF',
+    fontWeight: '400',
+  },
+  imagePreviewSection: {
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  imagePreviewContainer: {
+    position: 'relative',
+  },
+  postImagePreview: {
+    width: 200,
+    height: 200,
+    borderRadius: 12,
+    backgroundColor: '#F0F0F0',
+  },
+  removePostImageButton: {
+    position: 'absolute',
+    top: -10,
+    right: -10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  moreButton: {
+    padding: 8,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});

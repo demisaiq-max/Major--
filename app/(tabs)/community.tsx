@@ -1,0 +1,2536 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+  StyleSheet,
+  Text,
+  View,
+  ScrollView,
+  TouchableOpacity,
+  Image,
+  Modal,
+  Dimensions,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  ActivityIndicator,
+  RefreshControl,
+  Keyboard,
+  KeyboardEvent,
+  ActionSheetIOS,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Search, Heart, MessageCircle, Eye, ChevronLeft, MoreHorizontal, Send, Camera, Image as ImageIcon, X, ChevronDown, Users } from "lucide-react-native";
+import * as ImagePicker from 'expo-image-picker';
+import { useLanguage } from "@/hooks/language-context";
+import { useUser } from "@/hooks/user-context";
+import { trpc } from "@/lib/trpc";
+import { supabase } from "@/lib/supabase";
+import { useRouter } from "expo-router";
+
+const { width } = Dimensions.get('window');
+
+interface Post {
+  id: string;
+  user_id: string;
+  group_id?: string;
+  content: string;
+  study_hours?: number;
+  subjects_studied?: string[];
+  mood?: string;
+  image_url?: string;
+  likes_count: number;
+  comments_count: number;
+  views_count: number;
+  created_at: string;
+  updated_at: string;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  group?: {
+    id: string;
+    name: string;
+  };
+  likes?: Array<{ user_id: string }>;
+  comments?: {
+    id: string;
+    content: string;
+    created_at: string;
+    user?: {
+      id: string;
+      name: string;
+    };
+  }[];
+}
+
+interface Question {
+  id: string;
+  user_id: string;
+  title: string;
+  content: string;
+  subject?: string;
+  tags?: string[];
+  image_urls?: string[];
+  views_count: number;
+  answers_count: number;
+  likes_count: number;
+  is_solved: boolean;
+  created_at: string;
+  user?: {
+    id: string;
+    name: string;
+  };
+  likes?: Array<{ user_id: string }>;
+}
+
+interface Group {
+  id: string;
+  name: string;
+  description?: string;
+  subject?: string;
+  member_count: number;
+  max_members?: number;
+  is_public: boolean;
+  created_by: string;
+  creator?: {
+    id: string;
+    name: string;
+  };
+  members?: Array<{ user_id: string }>;
+  isMember?: boolean;
+}
+
+export default function CommunityScreen() {
+  const { language } = useLanguage();
+  const { user, isLoading: userLoading } = useUser();
+  const userId = user?.id;
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  
+  // Fetch user profile with real data
+  const userProfileQuery = trpc.users.getUserProfile.useQuery(
+    { userId: userId || '' },
+    { 
+      enabled: !!userId,
+      staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    }
+  );
+  const [activeTab, setActiveTab] = useState(0);
+  const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const [selectedQuestion, setSelectedQuestion] = useState<Question | null>(null);
+  const [showPostDetail, setShowPostDetail] = useState(false);
+  const [showQuestionDetail, setShowQuestionDetail] = useState(false);
+  const [showCreatePost, setShowCreatePost] = useState(false);
+  const [showCreateQuestion, setShowCreateQuestion] = useState(false);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [newPostContent, setNewPostContent] = useState("");
+  const [postImage, setPostImage] = useState<string | null>(null);
+  const [newQuestionTitle, setNewQuestionTitle] = useState("");
+  const [newQuestionContent, setNewQuestionContent] = useState("");
+  const [newQuestionSubject, setNewQuestionSubject] = useState("");
+  const [questionImages, setQuestionImages] = useState<string[]>([]);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupDescription, setNewGroupDescription] = useState("");
+  const [newGroupSubject, setNewGroupSubject] = useState("");
+  const [newGroupMaxMembers, setNewGroupMaxMembers] = useState<number | undefined>(undefined);
+  const [newComment, setNewComment] = useState("");
+  const [newAnswer, setNewAnswer] = useState("");
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const commentInputRef = useRef<TextInput>(null);
+
+  const tabs = [
+    language === 'ko' ? '공부 인증' : "Study Verification",
+    language === 'ko' ? '그룹' : 'Groups',
+    language === 'ko' ? '질문' : 'Questions'
+  ];
+
+  // Fetch posts with real-time updates
+  const postsQuery = trpc.community.posts.getPosts.useQuery({
+    groupId: activeTab === 1 && selectedGroup ? selectedGroup : undefined,
+    limit: 50,
+  }, {
+    enabled: !userLoading && !!user, // Only fetch when user is loaded
+    refetchInterval: 10000, // Refresh every 10 seconds for real-time updates
+    retry: 1,
+    retryDelay: 1000,
+    staleTime: 5000,
+  });
+
+  // Fetch groups
+  const groupsQuery = trpc.community.groups.getGroups.useQuery({
+    userId: userId,
+  }, {
+    enabled: !userLoading && !!userId, // Only fetch when user is loaded
+    retry: 1,
+    retryDelay: 1000,
+    staleTime: 5000,
+  });
+
+  // Fetch questions
+  const questionsQuery = trpc.community.questions.getQuestions.useQuery({
+    limit: 50,
+  }, {
+    enabled: !userLoading && !!user, // Only fetch when user is loaded
+    refetchInterval: 30000,
+    retry: 1,
+    retryDelay: 1000,
+    staleTime: 5000,
+  });
+
+  // Mutations
+  const createPostMutation = trpc.community.posts.createPost.useMutation({
+    onSuccess: () => {
+      postsQuery.refetch();
+      setNewPostContent("");
+      setPostImage(null);
+      setShowCreatePost(false);
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '게시물이 작성되었습니다' : 'Post created successfully'
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        error.message
+      );
+    },
+  });
+
+  const createQuestionMutation = trpc.community.questions.createQuestion.useMutation({
+    onSuccess: () => {
+      questionsQuery.refetch();
+      setNewQuestionTitle("");
+      setNewQuestionContent("");
+      setNewQuestionSubject("");
+      setQuestionImages([]);
+      setShowCreateQuestion(false);
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '질문이 등록되었습니다' : 'Question posted successfully'
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        error.message
+      );
+    },
+  });
+
+  const createGroupMutation = trpc.community.groups.createGroup.useMutation({
+    onSuccess: () => {
+      groupsQuery.refetch();
+      setNewGroupName("");
+      setNewGroupDescription("");
+      setNewGroupSubject("");
+      setNewGroupMaxMembers(undefined);
+      setShowCreateGroup(false);
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '그룹이 생성되었습니다' : 'Group created successfully'
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        error.message
+      );
+    },
+  });
+
+  const likePostMutation = trpc.community.posts.likePost.useMutation({
+    onSuccess: (data) => {
+      console.log('Like post success:', data);
+      postsQuery.refetch();
+      // Don't show alert for successful likes to reduce noise
+    },
+    onError: (error) => {
+      console.error('ERROR Like post error:', error);
+      let errorMessage = 'Failed to like post';
+      
+      if (error.message.includes('JSON Parse error')) {
+        errorMessage = 'Server connection error. Please try again.';
+      } else if (error.message.includes('Failed to fetch')) {
+        errorMessage = 'Network error. Please check your connection.';
+      } else {
+        errorMessage = error.message || 'Failed to like post';
+      }
+      
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        language === 'ko' ? '서버 연결 오류입니다. 다시 시도해주세요.' : errorMessage
+      );
+    },
+  });
+
+  const likeQuestionMutation = trpc.community.questions.likeQuestion.useMutation({
+    onSuccess: () => {
+      questionsQuery.refetch();
+    },
+  });
+
+  const addCommentMutation = trpc.community.posts.addComment.useMutation({
+    onSuccess: (data) => {
+      console.log('Comment added successfully:', data);
+      postsQuery.refetch().then(() => {
+        // Update selected post with new data
+        if (selectedPost) {
+          const updatedPost = postsQuery.data?.find(p => p.id === selectedPost.id);
+          if (updatedPost) {
+            setSelectedPost(updatedPost);
+          }
+        }
+      });
+      setNewComment("");
+      // Don't show alert for successful comments to reduce noise
+    },
+    onError: (error) => {
+      console.error('ERROR Add comment error:', error);
+      let errorMessage = 'Failed to post comment';
+      
+      if (error.message.includes('JSON Parse error')) {
+        errorMessage = 'Server connection error. Please try again.';
+      } else if (error.message.includes('Failed to fetch')) {
+        errorMessage = 'Network error. Please check your connection.';
+      } else {
+        errorMessage = error.message || 'Failed to post comment';
+      }
+      
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        language === 'ko' ? '서버 연결 오류입니다. 다시 시도해주세요.' : errorMessage
+      );
+    },
+  });
+
+  const addAnswerMutation = trpc.community.questions.addAnswer.useMutation({
+    onSuccess: () => {
+      questionsQuery.refetch();
+      setNewAnswer("");
+    },
+  });
+
+  const incrementPostViewMutation = trpc.community.posts.incrementView.useMutation();
+  const incrementQuestionViewMutation = trpc.community.questions.incrementView.useMutation();
+
+  const joinGroupMutation = trpc.community.groups.joinGroup.useMutation({
+    onSuccess: () => {
+      groupsQuery.refetch();
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '그룹에 가입되었습니다' : 'Joined group successfully'
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        error.message
+      );
+    },
+  });
+
+  const leaveGroupMutation = trpc.community.groups.leaveGroup.useMutation({
+    onSuccess: () => {
+      groupsQuery.refetch();
+      Alert.alert(
+        language === 'ko' ? '성공' : 'Success',
+        language === 'ko' ? '그룹에서 나갔습니다' : 'Left group successfully'
+      );
+    },
+  });
+
+  // Set up real-time subscription for posts
+  useEffect(() => {
+    if (!user) return;
+    
+    const channel = supabase
+      .channel('posts-changes')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'daily_posts' 
+      }, () => {
+        console.log('Post change detected');
+        postsQuery.refetch();
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'post_likes' 
+      }, () => {
+        console.log('Like change detected');
+        postsQuery.refetch();
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'post_comments' 
+      }, () => {
+        console.log('Comment change detected');
+        postsQuery.refetch();
+        // Update selected post if it's open
+        if (selectedPost) {
+          setTimeout(() => {
+            const updatedPost = postsQuery.data?.find(p => p.id === selectedPost.id);
+            if (updatedPost) {
+              setSelectedPost(updatedPost);
+            }
+          }, 500);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, postsQuery, selectedPost]);
+
+  // Set up real-time subscription for questions
+  useEffect(() => {
+    if (!user) return;
+    
+    const channel = supabase
+      .channel('questions-changes')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'questions' 
+      }, () => {
+        questionsQuery.refetch();
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'answers' 
+      }, () => {
+        questionsQuery.refetch();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, questionsQuery]);
+
+  // Handle keyboard events
+  useEffect(() => {
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e: KeyboardEvent) => {
+        setKeyboardHeight(e.endCoordinates.height);
+        setIsKeyboardVisible(true);
+        // Scroll to bottom when keyboard opens in post detail
+        if (showPostDetail) {
+          setTimeout(() => {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }, 100);
+        }
+      }
+    );
+    
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+        setIsKeyboardVisible(false);
+      }
+    );
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  }, [showPostDetail]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await Promise.all([
+      postsQuery.refetch(),
+      groupsQuery.refetch(),
+      questionsQuery.refetch(),
+    ]);
+    setRefreshing(false);
+  };
+
+  const handleLikePost = (postId: string) => {
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    console.log('Liking post:', postId, 'by user:', userId);
+    likePostMutation.mutate({ postId });
+  };
+
+  const handleLikeQuestion = (questionId: string) => {
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    likeQuestionMutation.mutate({ questionId });
+  };
+
+  const handleAddComment = () => {
+    if (!newComment.trim() || !selectedPost) {
+      Alert.alert(
+        language === 'ko' ? '알림' : 'Notice',
+        language === 'ko' ? '댓글을 입력해주세요' : 'Please enter a comment'
+      );
+      return;
+    }
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    
+    console.log('Adding comment to post:', selectedPost.id, 'by user:', userId);
+    addCommentMutation.mutate({
+      postId: selectedPost.id,
+      content: newComment,
+    });
+  };
+
+  const handleAddAnswer = () => {
+    if (!newAnswer.trim() || !selectedQuestion) return;
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    
+    addAnswerMutation.mutate({
+      questionId: selectedQuestion.id,
+      content: newAnswer,
+    });
+  };
+
+  const handleCreatePost = () => {
+    if (!newPostContent.trim()) {
+      Alert.alert(
+        language === 'ko' ? '알림' : 'Notice',
+        language === 'ko' ? '내용을 입력해주세요' : 'Please enter content'
+      );
+      return;
+    }
+    
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+
+    createPostMutation.mutate({
+      content: newPostContent,
+      groupId: selectedGroup || undefined,
+      imageUrl: postImage || undefined,
+    });
+  };
+
+  const handleCreateQuestion = () => {
+    if (!newQuestionTitle.trim() || !newQuestionContent.trim()) {
+      Alert.alert(
+        language === 'ko' ? '알림' : 'Notice',
+        language === 'ko' ? '제목과 내용을 모두 입력해주세요' : 'Please enter both title and content'
+      );
+      return;
+    }
+    
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+
+    createQuestionMutation.mutate({
+      title: newQuestionTitle,
+      content: newQuestionContent,
+      subject: newQuestionSubject,
+      imageUrls: questionImages.length > 0 ? questionImages : undefined,
+    });
+  };
+
+  const handleCreateGroup = () => {
+    if (!newGroupName.trim()) {
+      Alert.alert(
+        language === 'ko' ? '알림' : 'Notice',
+        language === 'ko' ? '그룹 이름을 입력해주세요' : 'Please enter group name'
+      );
+      return;
+    }
+    
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+
+    createGroupMutation.mutate({
+      name: newGroupName,
+      description: newGroupDescription || undefined,
+      subject: newGroupSubject || undefined,
+      maxMembers: newGroupMaxMembers,
+      isPublic: true,
+    });
+  };
+
+  const requestPermissions = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        language === 'ko' ? '권한 필요' : 'Permission Required',
+        language === 'ko' ? '사진을 선택하려면 갤러리 접근 권한이 필요합니다.' : 'We need gallery access permission to select photos.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const requestCameraPermissions = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(
+        language === 'ko' ? '권한 필요' : 'Permission Required',
+        language === 'ko' ? '사진을 촬영하려면 카메라 접근 권한이 필요합니다.' : 'We need camera access permission to take photos.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const pickImageFromGallery = async (isForPost = false) => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: false,
+        exif: false,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const imageUri = result.assets[0].uri;
+        console.log('Selected image from gallery:', imageUri);
+        if (isForPost) {
+          setPostImage(imageUri);
+        } else {
+          setQuestionImages(prev => [...prev, imageUri]);
+        }
+      }
+    } catch (error) {
+      console.error('Error picking image from gallery:', error);
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        language === 'ko' ? '이미지를 선택하는 중 오류가 발생했습니다.' : 'An error occurred while selecting the image.'
+      );
+    }
+  };
+
+  const takePhoto = async (isForPost = false) => {
+    const hasPermission = await requestCameraPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: false,
+        exif: false,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const imageUri = result.assets[0].uri;
+        console.log('Captured photo:', imageUri);
+        if (isForPost) {
+          setPostImage(imageUri);
+        } else {
+          setQuestionImages(prev => [...prev, imageUri]);
+        }
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert(
+        language === 'ko' ? '오류' : 'Error',
+        language === 'ko' ? '사진을 촬영하는 중 오류가 발생했습니다.' : 'An error occurred while taking the photo.'
+      );
+    }
+  };
+
+  const handleAddQuestionImage = () => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [
+            language === 'ko' ? '취소' : 'Cancel',
+            language === 'ko' ? '사진 촬영' : 'Take Photo',
+            language === 'ko' ? '갤러리에서 선택' : 'Choose from Gallery'
+          ],
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            takePhoto(false);
+          } else if (buttonIndex === 2) {
+            pickImageFromGallery(false);
+          }
+        }
+      );
+    } else {
+      Alert.alert(
+        language === 'ko' ? '사진 선택' : 'Select Photo',
+        language === 'ko' ? '사진을 어떻게 추가하시겠습니까?' : 'How would you like to add a photo?',
+        [
+          { text: language === 'ko' ? '취소' : 'Cancel', style: 'cancel' },
+          { text: language === 'ko' ? '사진 촬영' : 'Take Photo', onPress: () => takePhoto(false) },
+          { text: language === 'ko' ? '갤러리에서 선택' : 'Choose from Gallery', onPress: () => pickImageFromGallery(false) },
+        ]
+      );
+    }
+  };
+
+  const handleRemoveQuestionImage = (index: number) => {
+    setQuestionImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleJoinGroup = (groupId: string) => {
+    if (!userId) {
+      Alert.alert(
+        language === 'ko' ? '로그인 필요' : 'Login Required',
+        language === 'ko' ? '로그인 후 이용해주세요' : 'Please login to continue'
+      );
+      return;
+    }
+    joinGroupMutation.mutate({ groupId });
+  };
+
+  const handleLeaveGroup = (groupId: string) => {
+    if (!userId) return;
+    leaveGroupMutation.mutate({ groupId });
+  };
+
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) {
+      return language === 'ko' ? `${days}일 전` : `${days}d ago`;
+    } else if (hours > 0) {
+      return language === 'ko' ? `${hours}시간 전` : `${hours}h ago`;
+    } else {
+      return language === 'ko' ? '방금' : 'Just now';
+    }
+  };
+
+  const renderPost = (post: Post) => {
+    const isLiked = post.likes?.some(like => like.user_id === userId) || false;
+    
+    return (
+      <View key={post.id} style={styles.koreanPostCard}>
+        {/* Header with user info */}
+        <View style={styles.koreanPostHeader}>
+          <View style={styles.koreanUserInfo}>
+            <Image 
+              source={{ 
+                uri: post.user_id === userId && userProfileQuery.data?.profilePictureUrl 
+                  ? userProfileQuery.data.profilePictureUrl 
+                  : `https://i.pravatar.cc/150?u=${post.user_id}` 
+              }} 
+              style={styles.koreanAvatar} 
+            />
+            <View style={styles.koreanUserDetails}>
+              <Text style={styles.koreanUserName}>
+                {post.user_id === userId && userProfileQuery.data?.name 
+                  ? userProfileQuery.data.name 
+                  : (post.user?.name || '익명')}
+              </Text>
+              <Text style={styles.koreanUserMeta}>
+                {post.group ? `${post.group.name} | ` : ''}{post.study_hours || 5}등급
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.koreanPostTime}>{formatTime(post.created_at)}</Text>
+        </View>
+        
+        {/* Large Image */}
+        <TouchableOpacity 
+          style={styles.koreanImageContainer}
+          onPress={() => {
+            setSelectedPost(post);
+            setShowPostDetail(true);
+            // Increment view count
+            incrementPostViewMutation.mutate({ postId: post.id });
+          }}
+        >
+          <Image 
+            source={{ 
+              uri: post.image_url || 'https://images.unsplash.com/photo-1434030216411-0b793f4b4173?w=400&h=400&fit=crop'
+            }} 
+            style={styles.koreanPostImage} 
+          />
+        </TouchableOpacity>
+        
+        {/* Content */}
+        {post.content && (
+          <TouchableOpacity 
+            style={styles.koreanContentSection}
+            onPress={() => {
+              setSelectedPost(post);
+              setShowPostDetail(true);
+              // Increment view count
+              incrementPostViewMutation.mutate({ postId: post.id });
+            }}
+          >
+            <Text style={styles.koreanPostContent} numberOfLines={2}>
+              {post.content}
+            </Text>
+          </TouchableOpacity>
+        )}
+        
+        {/* Actions Bar */}
+        <View style={styles.koreanActionsBar}>
+          <TouchableOpacity 
+            style={styles.koreanActionButton}
+            onPress={() => handleLikePost(post.id)}
+            disabled={likePostMutation.isPending}
+          >
+            <Heart 
+              size={18} 
+              color={isLiked ? "#FF3B30" : "#8E8E93"} 
+              fill={isLiked ? "#FF3B30" : "none"}
+            />
+            <Text style={[styles.koreanActionText, isLiked && styles.koreanActionTextActive]}>
+              {post.likes_count || 0}
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.koreanActionButton}
+            onPress={() => {
+              setSelectedPost(post);
+              setShowPostDetail(true);
+              // Increment view count
+              incrementPostViewMutation.mutate({ postId: post.id });
+            }}
+          >
+            <MessageCircle size={18} color="#8E8E93" />
+            <Text style={styles.koreanActionText}>{post.comments_count || 0}</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.koreanActionButton}>
+            <Eye size={18} color="#8E8E93" />
+            <Text style={styles.koreanActionText}>{post.views_count || 0}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderQuestion = (question: Question) => {
+    const isLiked = question.likes?.some(like => like.user_id === userId) || false;
+    
+    return (
+      <TouchableOpacity 
+        key={question.id} 
+        style={styles.discussionPostCard}
+        onPress={() => {
+          // Navigate to question detail page
+          router.push(`/question-detail?id=${question.id}`);
+        }}
+      >
+        <View style={styles.discussionHeader}>
+          <View style={styles.discussionInfo}>
+            <Text style={styles.discussionTitle} numberOfLines={2}>
+              {question.title}
+            </Text>
+            <Text style={styles.discussionContent} numberOfLines={2}>
+              {question.content}
+            </Text>
+          </View>
+          {question.image_urls && question.image_urls[0] && (
+            <View style={styles.discussionImageContainer}>
+              <Image source={{ uri: question.image_urls[0] }} style={styles.discussionImage} />
+            </View>
+          )}
+        </View>
+        
+        <View style={styles.discussionFooter}>
+          <View style={styles.discussionAuthor}>
+            <Image 
+              source={{ 
+                uri: question.user_id === userId && userProfileQuery.data?.profilePictureUrl 
+                  ? userProfileQuery.data.profilePictureUrl 
+                  : `https://i.pravatar.cc/150?u=${question.user_id}` 
+              }} 
+              style={styles.smallAvatar} 
+            />
+            <Text style={styles.discussionAuthorName}>
+              {question.user_id === userId && userProfileQuery.data?.name 
+                ? userProfileQuery.data.name 
+                : (question.user?.name || 'Anonymous')}
+            </Text>
+            <Text style={styles.discussionTime}>{formatTime(question.created_at)}</Text>
+          </View>
+          
+          <View style={styles.discussionActions}>
+            <TouchableOpacity 
+              style={styles.discussionActionItem}
+              onPress={(e) => {
+                e.stopPropagation();
+                handleLikeQuestion(question.id);
+              }}
+            >
+              <Heart size={14} color={isLiked ? "#FF3B30" : "#8E8E93"} fill={isLiked ? "#FF3B30" : "none"} />
+              <Text style={[styles.discussionActionText, isLiked && { color: "#FF3B30" }]}>{question.likes_count}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.discussionActionItem}
+              onPress={(e) => {
+                e.stopPropagation();
+                router.push(`/question-detail?id=${question.id}`);
+              }}
+            >
+              <MessageCircle size={14} color="#8E8E93" />
+              <Text style={styles.discussionActionText}>{question.answers_count}</Text>
+            </TouchableOpacity>
+            <View style={styles.discussionActionItem}>
+              <Eye size={14} color="#8E8E93" />
+              <Text style={styles.discussionActionText}>{question.views_count}</Text>
+            </View>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderGroup = (group: Group) => {
+    return (
+      <TouchableOpacity 
+        key={group.id} 
+        style={styles.groupCard}
+        onPress={() => {
+          // Navigate to group detail page
+          router.push(`/group-detail?groupId=${group.id}`);
+        }}
+      >
+        <View style={styles.groupHeader}>
+          <Users size={24} color="#007AFF" />
+          <View style={styles.groupInfo}>
+            <Text style={styles.groupName}>{group.name}</Text>
+            {group.description && (
+              <Text style={styles.groupDescription} numberOfLines={2}>
+                {group.description}
+              </Text>
+            )}
+            <Text style={styles.groupMembers}>
+              {group.member_count} {language === 'ko' ? '멤버' : 'members'}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity
+          style={[styles.groupButton, group.isMember && styles.groupButtonJoined]}
+          onPress={(e) => {
+            e.stopPropagation();
+            if (group.isMember) {
+              handleLeaveGroup(group.id);
+            } else {
+              handleJoinGroup(group.id);
+            }
+          }}
+        >
+          <Text style={[styles.groupButtonText, group.isMember && styles.groupButtonTextJoined]}>
+            {group.isMember 
+              ? (language === 'ko' ? '나가기' : 'Leave')
+              : (language === 'ko' ? '가입하기' : 'Join')
+            }
+          </Text>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    );
+  };
+
+  const isLoading = userLoading || (postsQuery.isLoading && !postsQuery.data) || (groupsQuery.isLoading && !groupsQuery.data) || (questionsQuery.isLoading && !questionsQuery.data);
+  const hasError = postsQuery.isError || groupsQuery.isError || questionsQuery.isError;
+  
+  // Log for debugging
+  useEffect(() => {
+    console.log('Community Screen Debug:', {
+      userLoading,
+      user,
+      userId,
+      postsLoading: postsQuery.isLoading,
+      postsError: postsQuery.error,
+      postsData: postsQuery.data,
+      groupsLoading: groupsQuery.isLoading,
+      groupsError: groupsQuery.error,
+      questionsLoading: questionsQuery.isLoading,
+      questionsError: questionsQuery.error,
+    });
+  }, [userLoading, user, postsQuery.isLoading, postsQuery.error, groupsQuery.isLoading, questionsQuery.isLoading]);
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <Text style={styles.title}>{language === 'ko' ? '커뮤니티' : 'Community'}</Text>
+        <TouchableOpacity>
+          <Search size={24} color="#000000" />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.tabsContainer}>
+        {tabs.map((tab, index) => (
+          <TouchableOpacity 
+            key={index}
+            style={[styles.tab, activeTab === index && styles.tabActive]}
+            onPress={() => setActiveTab(index)}
+          >
+            <Text 
+              style={[styles.tabText, activeTab === index && styles.tabTextActive]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+            >
+              {tab}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {activeTab === 1 && (
+        <TouchableOpacity 
+          style={styles.groupSelector}
+          onPress={() => setShowGroupModal(true)}
+        >
+          <Users size={16} color="#007AFF" />
+          <Text style={styles.groupSelectorText}>
+            {selectedGroup 
+              ? groupsQuery.data?.find(g => g.id === selectedGroup)?.name 
+              : (language === 'ko' ? '그룹 선택' : 'Select Group')
+            }
+          </Text>
+          <ChevronDown size={16} color="#8E8E93" />
+        </TouchableOpacity>
+      )}
+
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
+      >
+        {userLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <Text style={styles.loadingText}>
+              {language === 'ko' ? '사용자 정보 로딩 중...' : 'Loading user...'}
+            </Text>
+          </View>
+        ) : isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <Text style={styles.loadingText}>
+              {language === 'ko' ? '데이터 로딩 중...' : 'Loading data...'}
+            </Text>
+          </View>
+        ) : hasError ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>
+              {language === 'ko' ? '데이터를 불러오는 중 오류가 발생했습니다' : 'Error loading data'}
+            </Text>
+            <Text style={styles.emptySubText}>
+              {postsQuery.error?.message || groupsQuery.error?.message || questionsQuery.error?.message || 'Unknown error'}
+            </Text>
+            <TouchableOpacity 
+              style={styles.retryButton}
+              onPress={handleRefresh}
+            >
+              <Text style={styles.retryButtonText}>
+                {language === 'ko' ? '다시 시도' : 'Retry'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <>
+            {activeTab === 0 && (
+              <>
+                {/* Group Pills for Study Verification Tab */}
+                {activeTab === 0 && groupsQuery.data && groupsQuery.data.length > 0 && (
+                  <ScrollView 
+                    horizontal 
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.groupPillsContainer}
+                    contentContainerStyle={styles.groupPillsContent}
+                  >
+                    <TouchableOpacity
+                      style={[
+                        styles.groupPill,
+                        !selectedGroup && styles.groupPillActive
+                      ]}
+                      onPress={() => setSelectedGroup(null)}
+                    >
+                      <Text style={[
+                        styles.groupPillText,
+                        !selectedGroup && styles.groupPillTextActive
+                      ]}>
+                        {language === 'ko' ? '전체' : 'All'}
+                      </Text>
+                    </TouchableOpacity>
+                    {groupsQuery.data.filter(g => g.isMember).map(group => (
+                      <TouchableOpacity
+                        key={group.id}
+                        style={[
+                          styles.groupPill,
+                          selectedGroup === group.id && styles.groupPillActive
+                        ]}
+                        onPress={() => setSelectedGroup(group.id)}
+                      >
+                        <Text style={[
+                          styles.groupPillText,
+                          selectedGroup === group.id && styles.groupPillTextActive
+                        ]}>
+                          {group.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+                
+                {postsQuery.data && postsQuery.data.length > 0 
+                  ? (
+                    selectedGroup 
+                      ? postsQuery.data.filter(p => p.group_id === selectedGroup).map(renderPost)
+                      : postsQuery.data.map(renderPost)
+                  )
+                  : (
+                    <View style={styles.emptyContainer}>
+                      <Text style={styles.emptyText}>
+                        {language === 'ko' ? '아직 게시물이 없습니다' : 'No posts yet'}
+                      </Text>
+                      <Text style={styles.emptySubText}>
+                        {language === 'ko' ? '첫 번째 게시물을 작성해보세요!' : 'Be the first to post!'}
+                      </Text>
+                    </View>
+                  )
+                }
+              </>
+            )}
+            {activeTab === 1 && (
+              <View style={styles.groupsContainer}>
+                {groupsQuery.data && groupsQuery.data.length > 0 ? (
+                  groupsQuery.data.map(renderGroup)
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>
+                      {language === 'ko' ? '그룹이 없습니다' : 'No groups available'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+            {activeTab === 2 && (
+              questionsQuery.data && questionsQuery.data.length > 0
+                ? questionsQuery.data.map(renderQuestion)
+                : (
+                  <View style={styles.emptyContainer}>
+                    <Text style={styles.emptyText}>
+                      {language === 'ko' ? '아직 질문이 없습니다' : 'No questions yet'}
+                    </Text>
+                    <Text style={styles.emptySubText}>
+                      {language === 'ko' ? '첫 번째 질문을 등록해보세요!' : 'Ask the first question!'}
+                    </Text>
+                  </View>
+                )
+            )}
+          </>
+        )}
+      </ScrollView>
+
+      {/* Group Selection Modal */}
+      <Modal
+        visible={showGroupModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setShowGroupModal(false)}>
+              <X size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>
+              {language === 'ko' ? '그룹 선택' : 'Select Group'}
+            </Text>
+            <View style={styles.spacer} />
+          </View>
+          
+          <ScrollView style={styles.modalContent}>
+            {groupsQuery.data?.map(renderGroup)}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Post Detail Modal */}
+      <Modal
+        visible={showPostDetail}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity 
+              onPress={() => setShowPostDetail(false)}
+              style={styles.backButton}
+            >
+              <ChevronLeft size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>
+              {language === 'ko' ? '게시물' : 'Post'}
+            </Text>
+          </View>
+          
+          {selectedPost && (
+            <View style={styles.modalContent}>
+              <ScrollView 
+                ref={scrollViewRef}
+                style={styles.modalScrollContent}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ paddingBottom: keyboardHeight > 0 ? keyboardHeight + 80 : 120 }}
+                showsVerticalScrollIndicator={true}
+              >
+                <View style={styles.postDetailHeader}>
+                  <Image 
+                    source={{ 
+                      uri: selectedPost.user_id === userId && userProfileQuery.data?.profilePictureUrl 
+                        ? userProfileQuery.data.profilePictureUrl 
+                        : `https://i.pravatar.cc/150?u=${selectedPost.user_id}` 
+                    }} 
+                    style={styles.avatar} 
+                  />
+                  <View style={styles.postInfo}>
+                    <Text style={styles.authorName}>
+                      {selectedPost.user_id === userId && userProfileQuery.data?.name 
+                        ? userProfileQuery.data.name 
+                        : (selectedPost.user?.name || 'Anonymous')}
+                    </Text>
+                    <Text style={styles.postTime}>{formatTime(selectedPost.created_at)}</Text>
+                  </View>
+                </View>
+                
+                <Text style={styles.postDetailContent}>{selectedPost.content}</Text>
+                
+                {selectedPost.image_url && (
+                  <Image source={{ uri: selectedPost.image_url }} style={styles.postDetailImage} />
+                )}
+                
+                <View style={styles.postDetailActions}>
+                  <TouchableOpacity 
+                    style={styles.likeButton}
+                    onPress={() => handleLikePost(selectedPost.id)}
+                    disabled={likePostMutation.isPending}
+                  >
+                    <Heart 
+                      size={16} 
+                      color={selectedPost.likes?.some(like => like.user_id === userId) ? "#FF3B30" : "#8E8E93"}
+                      fill={selectedPost.likes?.some(like => like.user_id === userId) ? "#FF3B30" : "none"}
+                    />
+                    <Text style={[styles.likeButtonText, selectedPost.likes?.some(like => like.user_id === userId) && { color: "#FF3B30" }]}>
+                      {selectedPost.likes_count || 0}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <View style={styles.commentsSection}>
+                  <Text style={styles.commentsTitle}>
+                    {language === 'ko' ? '댓글' : 'Comments'} {selectedPost.comments_count}
+                  </Text>
+                  
+                  {(postsQuery.data?.find(p => p.id === selectedPost.id)?.comments || selectedPost.comments)?.map((comment: { id: string; content: string; created_at: string; user?: { id: string; name: string } }) => (
+                    <View key={comment.id} style={styles.commentItem}>
+                      <Image 
+                        source={{ 
+                          uri: comment.user?.id === userId && userProfileQuery.data?.profilePictureUrl 
+                            ? userProfileQuery.data.profilePictureUrl 
+                            : `https://i.pravatar.cc/150?u=${comment.user?.id}` 
+                        }} 
+                        style={styles.commentAvatar} 
+                      />
+                      <View style={styles.commentContent}>
+                        <View style={styles.commentHeader}>
+                          <Text style={styles.commentAuthor}>
+                            {comment.user?.id === userId && userProfileQuery.data?.name 
+                              ? userProfileQuery.data.name 
+                              : (comment.user?.name || 'Anonymous')}
+                          </Text>
+                          <Text style={styles.commentTime}>
+                            {formatTime(comment.created_at)}
+                          </Text>
+                        </View>
+                        <Text style={styles.commentText}>{comment.content}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+              
+              {/* Comment Input with Keyboard Avoidance */}
+              <View style={[styles.commentInputContainer, { 
+                bottom: keyboardHeight > 0 ? keyboardHeight : 0,
+                paddingBottom: Platform.OS === 'ios' ? 20 : 20
+              }]}>
+                <View style={styles.commentInputWrapper}>
+                  <View style={styles.inputRow}>
+                    <TextInput
+                      ref={commentInputRef}
+                      style={styles.commentInput}
+                      placeholder={language === 'ko' ? '댓글을 입력하세요...' : 'Write a comment...'}
+                      placeholderTextColor="#8E8E93"
+                      value={newComment}
+                      onChangeText={setNewComment}
+                      multiline
+                      maxLength={500}
+                    />
+                    <TouchableOpacity 
+                      style={[styles.sendButton, {
+                        opacity: newComment.trim() ? 1 : 0.5
+                      }]}
+                      onPress={handleAddComment}
+                      disabled={!newComment.trim() || addCommentMutation.isPending}
+                    >
+                      {addCommentMutation.isPending ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Send size={18} color="#FFFFFF" />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* Create Post Modal */}
+      <Modal
+        visible={showCreatePost}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView 
+          style={[styles.modalContainer, { paddingTop: insets.top }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+        >
+          <View style={styles.createPostHeader}>
+            <TouchableOpacity onPress={() => setShowCreatePost(false)}>
+              <X size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.createPostTitle}>
+              {language === 'ko' ? '새 게시물' : 'New Post'}
+            </Text>
+            <TouchableOpacity onPress={handleCreatePost}>
+              <Text style={styles.postButton}>
+                {language === 'ko' ? '게시' : 'Post'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          
+          <View style={styles.createPostContent}>
+            <ScrollView 
+              style={styles.createPostScrollView}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <TextInput
+                style={styles.postTextInput}
+                placeholder={language === 'ko' ? '오늘의 공부를 공유해주세요...' : 'Share your study today...'}
+                placeholderTextColor="#8E8E93"
+                value={newPostContent}
+                onChangeText={setNewPostContent}
+                multiline
+                autoFocus
+              />
+              
+              {/* Image Preview Section */}
+              {postImage && (
+                <View style={styles.imagePreviewSection}>
+                  <View style={styles.imagePreviewContainer}>
+                    <Image source={{ uri: postImage }} style={styles.postImagePreview} />
+                    <TouchableOpacity 
+                      style={styles.removePostImageButton}
+                      onPress={() => setPostImage(null)}
+                    >
+                      <X size={20} color="#FFFFFF" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              
+              {/* Centered Image Upload Section */}
+              <View style={styles.centeredImageUploadSection}>
+                <Text style={styles.imageUploadTitle}>
+                  {language === 'ko' ? '사진 추가' : 'Add Photo'}
+                </Text>
+                <View style={styles.imageUploadButtons}>
+                  <TouchableOpacity 
+                    style={styles.centeredImageUploadButton}
+                    onPress={() => takePhoto(true)}
+                  >
+                    <Camera size={40} color="#007AFF" />
+                    <Text style={styles.centeredImageUploadButtonText}>
+                      {language === 'ko' ? '사진 촬영' : 'Take Photo'}
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={styles.centeredImageUploadButton}
+                    onPress={() => pickImageFromGallery(true)}
+                  >
+                    <ImageIcon size={40} color="#007AFF" />
+                    <Text style={styles.centeredImageUploadButtonText}>
+                      {language === 'ko' ? '갤러리에서 선택' : 'Choose from Gallery'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Create Question Modal */}
+      <Modal
+        visible={showCreateQuestion}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+          <View style={styles.createPostHeader}>
+            <TouchableOpacity onPress={() => setShowCreateQuestion(false)}>
+              <X size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.createPostTitle}>
+              {language === 'ko' ? '새 질문' : 'New Question'}
+            </Text>
+            <TouchableOpacity onPress={handleCreateQuestion}>
+              <Text style={styles.postButton}>
+                {language === 'ko' ? '등록' : 'Post'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          
+          <KeyboardAvoidingView 
+            style={styles.createPostContent}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+          >
+            <ScrollView 
+              style={styles.createQuestionScroll}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ 
+                paddingBottom: keyboardHeight > 0 ? 20 : (Platform.OS === 'ios' ? insets.bottom + 20 : 40)
+              }}
+            >
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '과목' : 'Subject'}
+              </Text>
+              <TextInput
+                style={styles.subjectInput}
+                placeholder={language === 'ko' ? '과목을 입력하세요' : 'Enter subject'}
+                placeholderTextColor="#8E8E93"
+                value={newQuestionSubject}
+                onChangeText={setNewQuestionSubject}
+              />
+              
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '질문 제목' : 'Question Title'}
+              </Text>
+              <TextInput
+                style={styles.questionTitleInput}
+                placeholder={language === 'ko' ? '질문 제목' : 'Question Title'}
+                placeholderTextColor="#8E8E93"
+                value={newQuestionTitle}
+                onChangeText={setNewQuestionTitle}
+              />
+              
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '질문 내용' : 'Question Content'}
+              </Text>
+              <TextInput
+                style={styles.postTextInput}
+                placeholder={language === 'ko' ? '질문 내용을 자세히 작성해주세요...' : 'Write your question in detail...'}
+                placeholderTextColor="#8E8E93"
+                value={newQuestionContent}
+                onChangeText={setNewQuestionContent}
+                multiline
+              />
+              
+              {/* Image Section */}
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '이미지 (선택사항)' : 'Images (Optional)'}
+              </Text>
+              <View style={styles.imageSection}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  {questionImages.map((imageUrl, index) => (
+                    <View key={index} style={styles.imagePreview}>
+                      <Image source={{ uri: imageUrl }} style={styles.previewImage} />
+                      <TouchableOpacity 
+                        style={styles.removeImageButton}
+                        onPress={() => handleRemoveQuestionImage(index)}
+                      >
+                        <X size={16} color="#FFFFFF" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <TouchableOpacity 
+                    style={styles.addImageButton}
+                    onPress={handleAddQuestionImage}
+                  >
+                    <Camera size={24} color="#007AFF" />
+                    <Text style={styles.addImageText}>
+                      {language === 'ko' ? '사진 추가' : 'Add Photo'}
+                    </Text>
+                  </TouchableOpacity>
+                </ScrollView>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Create Group Modal */}
+      <Modal
+        visible={showCreateGroup}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+          <View style={styles.createPostHeader}>
+            <TouchableOpacity onPress={() => setShowCreateGroup(false)}>
+              <X size={24} color="#000000" />
+            </TouchableOpacity>
+            <Text style={styles.createPostTitle}>
+              {language === 'ko' ? '새 그룹 만들기' : 'Create New Group'}
+            </Text>
+            <TouchableOpacity onPress={handleCreateGroup}>
+              <Text style={styles.postButton}>
+                {language === 'ko' ? '생성' : 'Create'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          
+          <KeyboardAvoidingView 
+            style={styles.createPostContent}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <ScrollView style={styles.createGroupScroll}>
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '그룹 이름 *' : 'Group Name *'}
+              </Text>
+              <TextInput
+                style={styles.groupNameInput}
+                placeholder={language === 'ko' ? '그룹 이름을 입력하세요' : 'Enter group name'}
+                placeholderTextColor="#8E8E93"
+                value={newGroupName}
+                onChangeText={setNewGroupName}
+                autoFocus
+              />
+              
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '그룹 설명' : 'Group Description'}
+              </Text>
+              <TextInput
+                style={styles.groupDescriptionInput}
+                placeholder={language === 'ko' ? '그룹에 대한 설명을 입력하세요...' : 'Enter group description...'}
+                placeholderTextColor="#8E8E93"
+                value={newGroupDescription}
+                onChangeText={setNewGroupDescription}
+                multiline
+              />
+              
+              <Text style={styles.inputLabel}>
+                {language === 'ko' ? '주요 과목' : 'Main Subject'}
+              </Text>
+              <TextInput
+                style={styles.subjectInput}
+                placeholder={language === 'ko' ? '주요 과목을 입력하세요' : 'Enter main subject'}
+                placeholderTextColor="#8E8E93"
+                value={newGroupSubject}
+                onChangeText={setNewGroupSubject}
+              />
+              
+
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Floating Action Button */}
+      <TouchableOpacity 
+        style={styles.fab}
+        onPress={() => {
+          if (activeTab === 1) {
+            setShowCreateGroup(true);
+          } else if (activeTab === 2) {
+            setShowCreateQuestion(true);
+          } else {
+            setShowCreatePost(true);
+          }
+        }}
+      >
+        <Text style={styles.fabText}>+</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#F2F2F7",
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#000000",
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 80,
+  },
+  tabsContainer: {
+    flexDirection: "row",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+    justifyContent: "space-between",
+  },
+  tab: {
+    flex: 1,
+    paddingBottom: 8,
+    alignItems: "center",
+  },
+  tabActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: "#000000",
+  },
+  tabText: {
+    fontSize: 13,
+    color: "#8E8E93",
+    fontWeight: "400",
+    textAlign: "center",
+  },
+  tabTextActive: {
+    color: "#000000",
+    fontWeight: "500",
+  },
+  groupSelector: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+    gap: 8,
+  },
+  groupSelectorText: {
+    flex: 1,
+    fontSize: 14,
+    color: "#000000",
+  },
+  studyPostCard: {
+    backgroundColor: "#FFFFFF",
+    marginBottom: 12,
+    marginHorizontal: 16,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  koreanPostCard: {
+    backgroundColor: "#FFFFFF",
+    marginBottom: 8,
+    borderBottomWidth: 8,
+    borderBottomColor: "#F2F2F7",
+  },
+  koreanPostHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  koreanUserInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  koreanAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+  },
+  koreanUserDetails: {
+    flex: 1,
+  },
+  koreanUserName: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#000000",
+    marginBottom: 2,
+  },
+  koreanUserMeta: {
+    fontSize: 13,
+    color: "#8E8E93",
+  },
+  koreanPostTime: {
+    fontSize: 13,
+    color: "#8E8E93",
+  },
+  koreanImageContainer: {
+    width: '100%',
+    aspectRatio: 1,
+    backgroundColor: "#F0F0F0",
+  },
+  koreanPostImage: {
+    width: '100%',
+    height: '100%',
+  },
+  koreanContentSection: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  koreanPostContent: {
+    fontSize: 14,
+    color: "#000000",
+    lineHeight: 20,
+  },
+  koreanActionsBar: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 24,
+  },
+  koreanActionButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  koreanActionText: {
+    fontSize: 14,
+    color: "#8E8E93",
+    fontWeight: "500",
+  },
+  koreanActionTextActive: {
+    color: "#FF3B30",
+  },
+  discussionPostCard: {
+    backgroundColor: "#FFFFFF",
+    marginBottom: 1,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
+  },
+  postHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginRight: 10,
+  },
+  postInfo: {
+    flex: 1,
+  },
+  authorName: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#000000",
+  },
+  postTime: {
+    fontSize: 11,
+    color: "#8E8E93",
+    marginTop: 2,
+  },
+  studyContent: {
+    fontSize: 14,
+    color: "#000000",
+    lineHeight: 20,
+    marginTop: 8,
+  },
+  studyImageContainer: {
+    position: 'relative',
+    width: '100%',
+    aspectRatio: 1,
+  },
+  studyImage: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: "#F0F0F0",
+  },
+  studyActions: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingTop: 8,
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#F0F0F0",
+  },
+  studyActionButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  studyActionText: {
+    fontSize: 14,
+    color: "#8E8E93",
+    fontWeight: '500',
+  },
+  actionTextActive: {
+    color: "#FF3B30",
+  },
+  discussionHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+  discussionInfo: {
+    flex: 1,
+  },
+  discussionTitle: {
+    fontSize: 16,
+    color: "#000000",
+    lineHeight: 22,
+    fontWeight: "600",
+    marginBottom: 4,
+  },
+  discussionContent: {
+    fontSize: 14,
+    color: "#8E8E93",
+    lineHeight: 20,
+  },
+  discussionImageContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginLeft: 12,
+  },
+  discussionImage: {
+    width: 80,
+    height: 80,
+    backgroundColor: "#F0F0F0",
+  },
+  discussionFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  discussionAuthor: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  smallAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    marginRight: 8,
+  },
+  discussionAuthorName: {
+    fontSize: 12,
+    color: "#000000",
+    fontWeight: "500",
+    marginRight: 8,
+  },
+  discussionTime: {
+    fontSize: 12,
+    color: "#8E8E93",
+  },
+  discussionActions: {
+    flexDirection: "row",
+    gap: 16,
+  },
+  discussionActionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  discussionActionText: {
+    fontSize: 12,
+    color: "#8E8E93",
+  },
+  groupCard: {
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 20,
+    marginVertical: 8,
+    padding: 16,
+    borderRadius: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  groupHeader: {
+    flexDirection: "row",
+    flex: 1,
+    gap: 12,
+  },
+  groupInfo: {
+    flex: 1,
+  },
+  groupName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#000000",
+    marginBottom: 4,
+  },
+  groupDescription: {
+    fontSize: 14,
+    color: "#8E8E93",
+    marginBottom: 4,
+  },
+  groupMembers: {
+    fontSize: 12,
+    color: "#007AFF",
+  },
+  groupButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: "#007AFF",
+    borderRadius: 16,
+  },
+  groupButtonJoined: {
+    backgroundColor: "#F0F0F0",
+  },
+  groupButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
+  groupButtonTextJoined: {
+    color: "#8E8E93",
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#8E8E93',
+    marginTop: 12,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#8E8E93',
+  },
+  emptySubText: {
+    fontSize: 14,
+    color: '#C7C7CC',
+    marginTop: 8,
+  },
+  retryButton: {
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#007AFF',
+    borderRadius: 20,
+  },
+  retryButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+  },
+  backButton: {
+    marginRight: 16,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#000000",
+    flex: 1,
+  },
+  modalContent: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  postDetailHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 16,
+  },
+  postDetailContent: {
+    fontSize: 16,
+    color: "#000000",
+    lineHeight: 22,
+    marginBottom: 16,
+  },
+  postDetailImage: {
+    width: width - 40,
+    height: 250,
+    borderRadius: 8,
+    marginBottom: 16,
+    backgroundColor: "#F0F0F0",
+  },
+  postDetailActions: {
+    flexDirection: "row",
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5EA",
+  },
+  likeButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#F0F0F0",
+    borderRadius: 16,
+    gap: 4,
+  },
+  likeButtonText: {
+    fontSize: 12,
+    color: "#8E8E93",
+  },
+  commentsSection: {
+    paddingVertical: 16,
+  },
+  commentsTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#000000",
+    marginBottom: 16,
+  },
+  commentItem: {
+    flexDirection: "row",
+    marginBottom: 16,
+  },
+  commentAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 12,
+  },
+  commentContent: {
+    flex: 1,
+  },
+  commentHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  commentAuthor: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#000000",
+  },
+  commentTime: {
+    fontSize: 10,
+    color: "#8E8E93",
+  },
+  commentText: {
+    fontSize: 14,
+    color: "#000000",
+    lineHeight: 18,
+  },
+  keyboardAvoidingView: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+  },
+  commentInputContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5EA',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  commentInputWrapper: {
+    padding: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  commentInput: {
+    flex: 1,
+    minHeight: 36,
+    maxHeight: 100,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    paddingTop: 8,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    fontSize: 14,
+    color: '#000000',
+    textAlignVertical: 'center',
+  },
+  sendButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 0,
+  },
+  sendButtonDisabled: {
+    backgroundColor: '#C7C7CC',
+    opacity: 0.6,
+  },
+  createPostHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E5EA',
+  },
+  createPostTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+  },
+  postButton: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  createPostContent: {
+    flex: 1,
+  },
+  createPostScrollView: {
+    flex: 1,
+  },
+  postTextInput: {
+    minHeight: 200,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    fontSize: 16,
+    color: '#000000',
+    textAlignVertical: 'top',
+  },
+  questionTitleInput: {
+    height: 44,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+    marginHorizontal: 20,
+    marginBottom: 8,
+  },
+  imageUploadSection: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    gap: 16,
+    marginTop: 20,
+  },
+  imageUploadButton: {
+    flex: 1,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    borderStyle: 'dashed',
+  },
+  imageUploadButtonText: {
+    fontSize: 14,
+    color: '#007AFF',
+    marginTop: 8,
+    fontWeight: '500',
+  },
+  centeredImageUploadSection: {
+    alignItems: 'center',
+    paddingVertical: 30,
+    paddingHorizontal: 20,
+    marginTop: 40,
+  },
+  imageUploadTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#000000',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  imageUploadButtons: {
+    flexDirection: 'row',
+    gap: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  centeredImageUploadButton: {
+    backgroundColor: '#F2F2F7',
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#007AFF',
+    borderStyle: 'dashed',
+    minWidth: 120,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  centeredImageUploadButtonText: {
+    fontSize: 14,
+    color: '#007AFF',
+    marginTop: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 90,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  fabText: {
+    fontSize: 28,
+    color: '#FFFFFF',
+    fontWeight: '400',
+  },
+  spacer: {
+    width: 24,
+  },
+  imageOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    padding: 12,
+  },
+  overlayHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  userInfoOverlay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  overlayAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  overlayUserName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  overlayGroupName: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  overlayTime: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  postContentSection: {
+    padding: 12,
+  },
+  groupLabel: {
+    fontSize: 12,
+    color: '#007AFF',
+    marginTop: 2,
+  },
+  groupPillsContainer: {
+    height: 44,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E5EA',
+  },
+  groupPillsContent: {
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    gap: 8,
+  },
+  groupPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 16,
+    height: 32,
+  },
+  groupPillActive: {
+    backgroundColor: '#007AFF',
+  },
+  groupPillText: {
+    fontSize: 14,
+    color: '#8E8E93',
+    fontWeight: '500',
+  },
+  groupPillTextActive: {
+    color: '#FFFFFF',
+  },
+  groupsContainer: {
+    paddingTop: 8,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#000000',
+    marginTop: 16,
+    marginBottom: 8,
+    paddingHorizontal: 20,
+  },
+  subjectInput: {
+    height: 44,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    fontSize: 14,
+    color: '#000000',
+    marginHorizontal: 20,
+    marginBottom: 8,
+  },
+  createQuestionScroll: {
+    flex: 1,
+  },
+  createGroupScroll: {
+    flex: 1,
+  },
+  imageSection: {
+    paddingHorizontal: 20,
+    marginBottom: 16,
+  },
+  imagePreview: {
+    position: 'relative',
+    marginRight: 12,
+  },
+  previewImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    backgroundColor: '#F0F0F0',
+  },
+  removeImageButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addImageButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 8,
+    backgroundColor: '#F2F2F7',
+    borderWidth: 2,
+    borderColor: '#007AFF',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addImageText: {
+    fontSize: 12,
+    color: '#007AFF',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  groupNameInput: {
+    height: 44,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+    marginHorizontal: 20,
+    marginBottom: 8,
+  },
+  groupDescriptionInput: {
+    minHeight: 100,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#000000',
+    marginHorizontal: 20,
+    marginBottom: 8,
+    textAlignVertical: 'top',
+  },
+  memberCountContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 20,
+    marginBottom: 16,
+  },
+  memberCountButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  memberCountButtonText: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  memberCountText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#000000',
+    marginHorizontal: 24,
+    minWidth: 40,
+    textAlign: 'center',
+  },
+  imagePreviewSection: {
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  imagePreviewContainer: {
+    position: 'relative',
+  },
+  postImagePreview: {
+    width: 200,
+    height: 200,
+    borderRadius: 12,
+    backgroundColor: '#F0F0F0',
+  },
+  removePostImageButton: {
+    position: 'absolute',
+    top: -10,
+    right: -10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+});

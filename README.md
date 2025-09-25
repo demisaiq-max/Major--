@@ -1,2 +1,2 @@
-# rork--
+# study-planner
 Created by Rork
