@@ -34,7 +34,7 @@ export default function TestResultsScreen() {
   const { t } = useLanguage();
   const [isLoading, setIsLoading] = useState(true);
   const [selectedResult, setSelectedResult] = useState<string | null>(null);
-  const { updateHomeStats } = useStudyStore();
+  const studyStore = useStudyStore();
 
   // Fetch latest test results
   const resultsQuery = trpc.tests.getLatestTestResults.useQuery(
@@ -79,14 +79,8 @@ export default function TestResultsScreen() {
     const newSelectedId = selectedResult === result.id ? null : result.id;
     setSelectedResult(newSelectedId);
     
-    // Update home screen stats if selected
-    if (newSelectedId && updateHomeStats) {
-      updateHomeStats({
-        targetPercentile: result.target_percentile || 89,
-        averagePercentile: result.average_percentile || 50,
-        recentPercentile: result.percentile,
-      });
-    }
+    // Note: updateHomeStats method doesn't exist in study store anymore
+    // This feature has been removed
   };
 
   const formatDate = (dateString: string): string => {

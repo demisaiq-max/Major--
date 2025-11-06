@@ -24,8 +24,8 @@ interface AnswerSheet {
   total_questions: number;
   mcq_questions?: number;
   text_questions?: number;
-  answered_questions: number;
-  completion_percentage: number;
+  answered_questions?: number;
+  completion_percentage?: number;
   status: 'draft' | 'submitted' | 'graded';
   score?: number;
   grade?: string;
@@ -265,7 +265,7 @@ export default function FinalTestsScreen() {
                   <View style={styles.sheetInfo}>
                     <Text style={styles.sheetName}>{sheet.sheet_name}</Text>
                     <Text style={styles.sheetMeta}>
-                      {sheet.total_questions} questions • {sheet.answered_questions || 0} answered ({Math.round(sheet.completion_percentage || 0)}%)
+                      {sheet.total_questions} questions
                     </Text>
                     <Text style={styles.sheetDate}>
                       {new Date(sheet.created_at).toLocaleDateString()}

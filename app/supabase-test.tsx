@@ -138,7 +138,7 @@ export default function SupabaseTestScreen() {
     }
   }, [supabaseTest.data, supabaseTest.error]);
   
-  const latestTestResults = trpc.tests.getLatestTestResults.useQuery('550e8400-e29b-41d4-a716-446655440000', {
+  const latestTestResults = trpc.tests.getLatestTestResults.useQuery(undefined, {
     enabled: connectionStatus.trpc === 'connected'
   });
   

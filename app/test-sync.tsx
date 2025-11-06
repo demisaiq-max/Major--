@@ -48,7 +48,7 @@ export default function TestSyncScreen() {
 
     try {
       const userData = {
-        clerkUserId: user.id,
+        userId: user.id,
         email: user.email || '',
         name: user.user_metadata?.name || user.email?.split('@')[0] || undefined,
         profilePictureUrl: user.user_metadata?.avatar_url || undefined,
@@ -56,7 +56,7 @@ export default function TestSyncScreen() {
 
       console.log('📤 Sending sync request:', userData);
 
-      const result = await trpcClient.users.syncClerkUser.mutate(userData);
+      const result = await trpcClient.users.syncSupabaseUser.mutate(userData);
       
       console.log('✅ Sync successful:', result);
       setSyncResult(result);

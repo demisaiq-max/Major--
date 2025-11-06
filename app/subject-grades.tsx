@@ -39,7 +39,7 @@ export default function SubjectGradesScreen() {
 
   // Fetch latest test results for statistics display
   const latestResultsQuery = trpc.tests.getLatestTestResults.useQuery(
-    user?.id || 'default-user',
+    { userId: user?.id || '' },
     { enabled: !!user?.id }
   );
 
@@ -107,7 +107,7 @@ export default function SubjectGradesScreen() {
     try {
       await createSubjectMutation.mutateAsync({
         userId: user.id,
-        subject: newSubjectName.trim(),
+        name: newSubjectName.trim(),
       });
     } catch {
       // Error is handled in the mutation's onError callback
@@ -124,9 +124,9 @@ export default function SubjectGradesScreen() {
 
     try {
       await updateSubjectMutation.mutateAsync({
+        id: editingSubject,
         userId: user.id,
-        oldSubject: editingSubject,
-        newSubject: editSubjectName.trim(),
+        name: editSubjectName.trim(),
       });
     } catch {
       // Error is handled in the mutation's onError callback
@@ -190,8 +190,8 @@ export default function SubjectGradesScreen() {
             if (!user?.id) return;
             try {
               await deleteSubjectMutation.mutateAsync({
+                id: subject,
                 userId: user.id,
-                subject,
               });
             } catch {
               // Error is handled in the mutation's onError callback
@@ -266,19 +266,19 @@ export default function SubjectGradesScreen() {
               </TouchableOpacity>
             </View>
           ) : (
-            subjectsQuery.data.map((subject: string) => {
+            subjectsQuery.data.map((subject: any) => {
               const latestGrade = getLatestGradeForSubject(subject);
               
               return (
-                <View key={subject} style={styles.subjectCard}>
+                <View key={subject.id} style={styles.subjectCard}>
                   <TouchableOpacity
                     style={styles.subjectContent}
-                    onPress={() => handleSubjectPress(subject)}
+                    onPress={() => handleSubjectPress(subject.name)}
                     activeOpacity={0.7}
                   >
                     <View style={styles.subjectInfo}>
                       <Text style={styles.subjectName}>
-                        {getSubjectName(subject)}
+                        {getSubjectName(subject.name)}
                       </Text>
                       <Text style={styles.subjectGrade}>
                         {latestGrade ? `${t('latestGrade')}: ${latestGrade}${t('gradeUnit')}` : t('noGradesYet')}
@@ -288,7 +288,7 @@ export default function SubjectGradesScreen() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.optionsButton}
-                    onPress={() => handleSubjectOptions(subject)}
+                    onPress={() => handleSubjectOptions(subject.id)}
                     activeOpacity={0.7}
                   >
                     <MoreVertical size={20} color="#8E8E93" />

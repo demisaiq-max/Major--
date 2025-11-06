@@ -22,7 +22,6 @@ export default function StatsScreen() {
   // Get timer sessions data
   const timerSessionsQuery = trpc.timers.getTimerSessions.useQuery(
     {
-      userId: user?.id || '',
       limit: 1000,
       completedOnly: true,
     },
