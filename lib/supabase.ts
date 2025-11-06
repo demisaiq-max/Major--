@@ -63,6 +63,30 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   global: {
     headers: {
       'X-Client-Info': 'expo-react-native'
+    },
+    fetch: async (url, options) => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        
+        const response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+        });
+        
+        clearTimeout(timeoutId);
+        return response;
+      } catch (error: any) {
+        if (error.name === 'AbortError' || error.message?.includes('timeout')) {
+          console.error('❌ Supabase request timeout:', url);
+          throw new Error('Request timeout - please check your network connection');
+        }
+        if (error.message?.includes('Network')) {
+          console.error('❌ Supabase network error:', url);
+          throw new Error('Network error - please check your internet connection');
+        }
+        throw error;
+      }
     }
   }
 });

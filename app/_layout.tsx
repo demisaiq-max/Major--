@@ -10,6 +10,7 @@ import { LanguageProvider } from "@/hooks/language-context";
 import { AuthProvider, useAuth } from "@/hooks/auth-context";
 import { trpc, createAuthenticatedTRPCClient } from "@/lib/trpc";
 
+
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
@@ -60,7 +61,7 @@ function AuthenticatedTRPCProvider({ children, queryClient }: { children: React.
       isLoading
     });
     return createAuthenticatedTRPCClient();
-  }, []); // Only create once to prevent hydration mismatch
+  }, [session, isLoading]);
 
   return (
     <trpc.Provider client={trpcClient} queryClient={queryClient}>

@@ -35,41 +35,34 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
-  // We can't pass controller to outer promise, so use only for fetch in link
-  // Here we just implement a generic timeout wrapper fallback
-  return new Promise<T>((resolve, reject) => {
-    let finished = false;
-    const timer = setTimeout(() => {
-      if (!finished) reject(new Error('Request timeout'));
-    }, ms);
-    promise
-      .then((v) => {
-        finished = true;
-        clearTimeout(timer);
-        resolve(v);
-      })
-      .catch((e) => {
-        finished = true;
-        clearTimeout(timer);
-        reject(e);
-      });
-    clearTimeout(timeout);
-  });
-}
-
 export const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
       url: trpcUrl,
       transformer: superjson,
-      fetch: (url, options) => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
-        return fetch(url, { ...options, signal: controller.signal })
-          .finally(() => clearTimeout(timeoutId));
+      fetch: async (url, options) => {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
+          
+          const response = await fetch(url, { 
+            ...options, 
+            signal: controller.signal 
+          });
+          
+          clearTimeout(timeoutId);
+          return response;
+        } catch (error: any) {
+          if (error.name === 'AbortError') {
+            console.error('❌ tRPC request timeout:', url);
+            throw new Error('Request timeout - please check your network connection');
+          }
+          if (error.message?.includes('Network request failed')) {
+            console.error('❌ tRPC network error:', url);
+            throw new Error('Network error - backend might be offline. Please check your connection.');
+          }
+          throw error;
+        }
       },
       headers: getAuthHeaders,
     }),
@@ -82,11 +75,29 @@ export const createAuthenticatedTRPCClient = () => {
       httpBatchLink({
         url: trpcUrl,
         transformer: superjson,
-        fetch: (url, options) => {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 15000);
-          return fetch(url, { ...options, signal: controller.signal })
-            .finally(() => clearTimeout(timeoutId));
+        fetch: async (url, options) => {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            
+            const response = await fetch(url, { 
+              ...options, 
+              signal: controller.signal 
+            });
+            
+            clearTimeout(timeoutId);
+            return response;
+          } catch (error: any) {
+            if (error.name === 'AbortError') {
+              console.error('❌ tRPC request timeout:', url);
+              throw new Error('Request timeout - please check your network connection');
+            }
+            if (error.message?.includes('Network request failed')) {
+              console.error('❌ tRPC network error:', url);
+              throw new Error('Network error - backend might be offline. Please check your connection.');
+            }
+            throw error;
+          }
         },
         headers: getAuthHeaders,
       }),

@@ -213,25 +213,32 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       setSession(null);
       setUser(null);
       
-      // Try to sign out from Supabase, but don't fail if there's no session
+      // Try to sign out from Supabase with timeout, but don't fail if there's no session
       try {
-        const { error } = await supabase.auth.signOut();
+        const signOutPromise = supabase.auth.signOut();
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Sign out timeout')), 5000)
+        );
+        
+        const { error } = await Promise.race([signOutPromise, timeoutPromise]) as any;
         
         if (error && error.message !== 'Auth session missing!') {
-          console.error('❌ Sign out error:', error);
+          console.error('❌ Sign out error (non-blocking):', error.message);
         } else {
           console.log('✅ Sign out successful');
         }
       } catch (sessionError: any) {
-        // Handle AuthSessionMissingError gracefully
+        // Handle all errors gracefully - they're non-blocking since we already cleared state
         if (sessionError.message?.includes('Auth session missing')) {
           console.log('ℹ️ No active session to sign out from');
+        } else if (sessionError.message?.includes('timeout') || sessionError.message?.includes('Network')) {
+          console.log('ℹ️ Sign out network error (non-blocking, local state cleared)');
         } else {
-          console.error('❌ Sign out session error:', sessionError);
+          console.error('❌ Sign out error (non-blocking):', sessionError.message);
         }
       }
     } catch (error) {
-      console.error('❌ Sign out exception:', error);
+      console.error('❌ Sign out exception (non-blocking):', error);
       // Ensure local state is cleared even on exception
       setSession(null);
       setUser(null);
