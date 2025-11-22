@@ -1,16 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Get Supabase configuration from environment variables
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://bmxtcqpuhfrvnajozzlw.supabase.co';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJteHRjcXB1aGZydm5ham96emx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY2NTQ4NDksImV4cCI6MjA3MjIzMDg0OX0.kDn1-ABfpKfUS7jBaUnSWuzNiUweiFp5dFzsOKNi0S0';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJteHRjcXB1aGZydm5ham96emx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY2NTQ4NDksImV4cCI6MjA3MjIzMDg0OX0.kDn1-ABfpKfUS7jBaUnSWuzNiUweiFp5dFzsOKNi0S0';
+
+// Detect if running on server (Node.js) or client (browser/React Native)
+const isServer = typeof window === 'undefined';
 
 console.log('🔗 Supabase configuration:', {
   url: supabaseUrl,
   keyConfigured: !!supabaseAnonKey,
   keyLength: supabaseAnonKey?.length || 0,
   urlValid: supabaseUrl.startsWith('https://'),
-  keyValid: supabaseAnonKey.startsWith('eyJ')
+  keyValid: supabaseAnonKey.startsWith('eyJ'),
+  environment: isServer ? 'server' : 'client'
 });
 
 // Validate configuration
@@ -22,13 +25,32 @@ if (!supabaseAnonKey || !supabaseAnonKey.startsWith('eyJ')) {
   console.error('❌ Invalid Supabase anon key');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    flowType: 'pkce',
-    storage: {
+// Storage adapter that works on both server and client
+const createStorageAdapter = () => {
+  if (isServer) {
+    // Server-side: simple in-memory storage (no persistence)
+    const memoryStorage = new Map<string, string>();
+    return {
+      getItem: async (key: string) => memoryStorage.get(key) || null,
+      setItem: async (key: string, value: string) => { memoryStorage.set(key, value); },
+      removeItem: async (key: string) => { memoryStorage.delete(key); }
+    };
+  } else {
+    // Client-side: use AsyncStorage
+    // Import at top level to avoid async issues
+    let AsyncStorage: any;
+    try {
+      AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    } catch {
+      // Fallback to localStorage if AsyncStorage not available
+      return {
+        getItem: async (key: string) => localStorage.getItem(key),
+        setItem: async (key: string, value: string) => { localStorage.setItem(key, value); },
+        removeItem: async (key: string) => { localStorage.removeItem(key); }
+      };
+    }
+    
+    return {
       getItem: async (key: string) => {
         try {
           if (!key?.trim()) return null;
@@ -58,7 +80,18 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
           console.error('❌ Storage removeItem error:', error);
         }
       }
-    }
+    };
+  }
+};
+
+// Create client with appropriate config
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: !isServer,
+    autoRefreshToken: !isServer,
+    detectSessionInUrl: !isServer,
+    flowType: isServer ? undefined : 'pkce',
+    storage: createStorageAdapter()
   },
   global: {
     headers: {
@@ -91,34 +124,36 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
-// Test connection on initialization
-const testSupabaseConnection = async () => {
-  try {
-    console.log('🔍 Testing Supabase connection...');
-    const { data, error } = await supabase.from('users').select('id').limit(1);
-    
-    if (error) {
-      console.error('❌ Supabase connection test failed:', {
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-        code: error.code
-      });
-    } else {
-      console.log('✅ Supabase connection test successful:', {
-        hasData: !!data,
-        recordCount: data?.length || 0
+// Test connection on initialization (client-side only)
+if (!isServer) {
+  const testSupabaseConnection = async () => {
+    try {
+      console.log('🔍 Testing Supabase connection...');
+      const { data, error } = await supabase.from('users').select('id').limit(1);
+      
+      if (error) {
+        console.error('❌ Supabase connection test failed:', {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code
+        });
+      } else {
+        console.log('✅ Supabase connection test successful:', {
+          hasData: !!data,
+          recordCount: data?.length || 0
+        });
+      }
+    } catch (err) {
+      console.error('❌ Supabase connection test error:', {
+        error: err instanceof Error ? err.message : String(err)
       });
     }
-  } catch (err) {
-    console.error('❌ Supabase connection test error:', {
-      error: err instanceof Error ? err.message : String(err)
-    });
-  }
-};
+  };
 
-// Run test after a delay to ensure environment is ready
-setTimeout(testSupabaseConnection, 3000);
+  // Run test after a delay to ensure environment is ready
+  setTimeout(testSupabaseConnection, 3000);
+}
 
 export type Database = {
   public: {
